@@ -188,3 +188,21 @@ cat >> target/linux/ipq40xx/config-6.12 <<'EOF'
 CONFIG_HWMON=y
 EOF
 
+# 8. 网络接口生成：02_network 的 board 列表里没有 qcom,ap-dk07.1-c1，
+#    board.d 会落到默认分支打印 "Unsupported hardware. Network interfaces
+#    not initialized"，于是不生成任何 lan/wan 配置（只有 br-lan 空桥）。
+#    本板内置交换机端口划分与 8devices Habanero DVK（同为 IPQ4019 内置
+#    交换机 + PSGMII）一致：lan1-lan4 + wan，直接把本板名插到该分组前面。
+NETWORK_SH=target/linux/ipq40xx/base-files/etc/board.d/02_network
+awk '/^[[:space:]]*8dev,habanero-dvk/ && !done {
+	print "\tqcom,ap-dk07.1-c1|\\"
+	done=1
+}
+{ print }' "$NETWORK_SH" > "$NETWORK_SH.tmp" && mv "$NETWORK_SH.tmp" "$NETWORK_SH"
+
+# 插入失败要立刻中止，否则要等整轮编译完才会发现板子还是没网络配置
+grep -q 'qcom,ap-dk07.1-c1' "$NETWORK_SH" || {
+	echo "ERROR: failed to add qcom,ap-dk07.1-c1 to $NETWORK_SH" >&2
+	exit 1
+}
+

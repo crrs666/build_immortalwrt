@@ -271,6 +271,45 @@
 	status = "okay";
 };
 
+/*
+ * 内置 5 口交换机。qcom-ipq4019.dtsi 里 gmac / switch / swport1..5 默认全是
+ * disabled，不使能则 ipqess 与 qca8k 都不 probe，内核一个以太网接口都不建
+ * （只剩 lo 和 phy0-ap0/phy1-ap0），串口里表现为完全没有 eth*/lan* 设备。
+ * swport1..4 标签为 lan1..lan4，swport5 标签为 wan，与厂商 bootargs 里
+ * switch_wan_bmp=0x20 / switch_lan_bmp=0x1e 的端口划分一致。
+ */
+&gmac {
+	status = "okay";
+};
+
+&switch {
+	status = "okay";
+};
+
+&swport1 {
+	status = "okay";
+};
+
+&swport2 {
+	status = "okay";
+};
+
+&swport3 {
+	status = "okay";
+};
+
+&swport4 {
+	status = "okay";
+};
+
+&swport5 {
+	status = "okay";
+};
+
+/*
+ * 交换机 5 个口的 PHY（ethphy0..4）和 PSGMII PHY（psgmiiphy）都挂在
+ * mdio 总线下面，mdio 不使能的话端口拿不到 phy-handle。
+ */
 &mdio {
 	pinctrl-0 = <&mdio_pins>;
 	pinctrl-names = "default";
