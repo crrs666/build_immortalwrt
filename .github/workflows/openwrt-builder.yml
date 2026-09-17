@@ -197,7 +197,7 @@ jobs:
         echo "release_tag=$(date +"%Y.%m.%d-%H.%M")" >> ${GITHUB_OUTPUT}
         touch release.txt
         echo "
-        💻 架构: x86-64
+        💻 架构: ipq40xx / Qualcomm AP-DK07.1-C1
 
         📂 源码: ${{ env.REPO_URL }}
 

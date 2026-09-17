@@ -107,3 +107,42 @@ cp -f $GITHUB_WORKSPACE/banner package/base-files/files/etc/banner
 #cp -f $GITHUB_WORKSPACE/argon/icon/ms-icon-144x144.png feeds/luci/themes/luci-theme-argon/htdocs/luci-static/argon/icon/ms-icon-144x144.png
 #cp -f $GITHUB_WORKSPACE/argon/favicon.ico package/luci-theme-design/htdocs/luci-static/design/favicon.ico
 
+# ==========================================================================
+# AP-DK07.1-C1 (IPQ4019) device support injection
+# 注入自定义设备支持：DTS / 镜像定义 / WiFi caldata hotplug / 内核 cmdline
+# ==========================================================================
+DEVICE_DIR=$GITHUB_WORKSPACE/device/ap-dk07.1-c1
+DTSDIR=target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom
+
+# 1. 设备树 overlay（覆盖主线 DK07.1-C1：1GB 内存、厂商 NAND 分区表、
+#    禁用 PCIe(GPIO38 冲突)、rx8010 RTC、厂商按键等）
+mkdir -p $DTSDIR
+cp -f $DEVICE_DIR/qcom-ipq4019-ap-dk07.1-c1.dts $DTSDIR/
+
+# 2. 追加镜像定义 qcom_ap-dk07.1-c1（FitImage + UbiFit, 128k/2048）
+cat $DEVICE_DIR/generic-device.mk >> target/linux/ipq40xx/image/generic.mk
+
+# 3. 替换 ath10k caldata hotplug（本板从 "0:ART" 提取：
+#    2.4G a000000 @0x1000, 5G a800000 @0x5000）
+cp -f $DEVICE_DIR/11-ath10k-caldata target/linux/ipq40xx/base-files/etc/hotplug.d/firmware/11-ath10k-caldata
+
+# 4. 强制内核 cmdline：QCA U-Boot 传递的是厂商 bootargs
+#    (ubi.mtd=rootfs ubi.mtd=data root=mtd:ubi_rootfs rootfstype=squashfs)，
+#    那是 3.14 + GLUEBI 的写法，6.12 不可用，必须整体覆盖。
+#    本板 squashfs rootfs 通过 ubiblock 挂载（本 target 未启用 GLUEBI）：
+#    ubi0 在 mtd13("rootfs") 上，卷序为 kernel(vol0) / rootfs(vol1) / rootfs_data(vol2)，
+#    故块设备名为 /dev/ubiblock0_1，需用 ubi.block= 提前创建（ubiblock 不自动建卷）
+cat >> target/linux/ipq40xx/config-6.12 <<'EOF'
+
+# AP-DK07.1-C1: force cmdline (QCA U-Boot passes vendor bootargs)
+CONFIG_CMDLINE="console=ttyMSM0,115200n8 ubi.mtd=rootfs ubi.block=0,rootfs root=/dev/ubiblock0_1 rootfstype=squashfs rootwait"
+CONFIG_CMDLINE_FORCE=y
+EOF
+
+# 5. 替换升级脚本 /lib/upgrade/platform.sh，为 qcom,ap-dk07.1-c1 增加：
+#    - platform_check_image: 厂商遗留卷 ubi_rootfs 占用 681 LEB，
+#      不先删除则新 kernel/rootfs 卷无空间可建，升级中途删了 kernel 卷会变砖
+#    - platform_do_upgrade: 本板 UBI 容器分区名为 "rootfs"，需覆盖 nand.sh
+#      默认的 CI_UBIPART="ubi"，否则 nand_attach_ubi 找不到分区
+cp -f $DEVICE_DIR/platform.sh target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
+
