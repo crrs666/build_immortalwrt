@@ -1,0 +1,338 @@
+#!/bin/sh
+#
+# fanctl - AP-DK07.1-C1 本地风扇控制（不依赖云端）
+#
+# 原厂方案：/etc/init.d/box_led_sound -> /usr/bin/fan_ctl（uClibc 二进制，
+# 链接 libiot_util/libiot_cjson，通过 iot_msg_send_nowait 把转速上报云端的
+# dm_fan_speed_report）。本脚本用纯 shell 重写同一套调速逻辑，去掉云端部分：
+#   - 原厂 PWM 由 SoC audio PWM 提供（gpio32 = audio_pwm2，period 40000ns = 25kHz）
+#   - 主线 ipq4019 没有 PWM 驱动，改用 pwm-gpio 软件 PWM（同一条 gpio32）
+#   - 原厂 /etc/fan/{wifi0_temp,fan_pwm_percent} 档位表改为 uci 配置
+#
+# 用法：fanctl run | set <0-100> | get | status
+#
+. /lib/functions.sh
+
+LOG_TAG=fanctl
+
+ENABLED=1
+MODE=fixed
+FIXED_PCT=40
+POLL=10
+BACKEND=auto
+PERIOD_NS=40000
+PWM_CHIP=""
+GPIO_NUM=32
+GPIO_AL=0
+HYST=3
+LEVELS=""
+TEMP_SOURCES=""
+BACKEND_OK=""
+KEEP_THRESH=""
+TARGET=""
+TEMP=""
+CUR=""
+NO_TEMP_WARNED=0
+
+log() {
+	logger -t "$LOG_TAG" "$*"
+	[ -t 2 ] && echo "$*" >&2
+	return 0
+}
+
+# ---------------------------------------------------------------- 配置读取 --
+
+add_level() {
+	local t p
+
+	t=${1%% *}
+	p=${1##* }
+	[ -n "$t" ] && [ -n "$p" ] || return 0
+	LEVELS="$LEVELS$t:$p "
+	return 0
+}
+
+add_source() {
+	[ -n "$1" ] && TEMP_SOURCES="$TEMP_SOURCES $1"
+	return 0
+}
+
+# pwm-gpio 驱动注册的 pwmchip（of compatible = "pwm-gpio"）
+find_pwm_chip() {
+	local d c
+
+	for d in /sys/class/pwm/pwmchip*; do
+		[ -e "$d/npwm" ] || continue
+		c=$(cat "$d/device/of_node/compatible" 2>/dev/null)
+		case "$c" in
+			*pwm-gpio*) echo "$d"; return 0 ;;
+		esac
+	done
+	# 本板只有一路 pwmchip 时直接使用
+	set -- /sys/class/pwm/pwmchip*
+	[ -e "$1/npwm" ] && [ ! -e "$2/npwm" ] && { echo "$1"; return 0; }
+	return 1
+}
+
+load_config() {
+	LEVELS=""
+	TEMP_SOURCES=""
+
+	config_load fanctl
+	config_get_bool ENABLED   settings enabled 1
+	config_get      MODE      settings mode fixed
+	config_get      FIXED_PCT settings fixed_percent 40
+	config_get      POLL      settings poll_interval 10
+	config_get      BACKEND   settings backend auto
+	config_get      PERIOD_NS settings pwm_period_ns 40000
+	config_get      PWM_CHIP  settings pwm_chip ""
+	config_get      GPIO_NUM  settings gpio 32
+	config_get_bool GPIO_AL   settings gpio_active_low 0
+	config_get      HYST      settings hysteresis 3
+	config_list_foreach settings level add_level
+	config_list_foreach settings temp_source add_source
+
+	[ -n "$PWM_CHIP" ] || PWM_CHIP=$(find_pwm_chip 2>/dev/null)
+	return 0
+}
+
+# --------------------------------------------------------------- 后端驱动 --
+
+detect_backend() {
+	BACKEND_OK=""
+	case "$BACKEND" in
+		pwm)  [ -n "$PWM_CHIP" ] && BACKEND_OK=pwm ;;
+		gpio) BACKEND_OK=gpio ;;
+		*)    if [ -n "$PWM_CHIP" ]; then BACKEND_OK=pwm; else BACKEND_OK=gpio; fi ;;
+	esac
+	[ -n "$BACKEND_OK" ]
+}
+
+gpio_path() {
+	echo "/sys/class/gpio/gpio$GPIO_NUM"
+}
+
+gpio_prepare() {
+	local d
+
+	d=$(gpio_path)
+	[ -d "$d" ] || echo "$GPIO_NUM" > /sys/class/gpio/export 2>/dev/null
+	echo out > "$d/direction" 2>/dev/null
+	return 0
+}
+
+# GPIO 后端只能开关：占空比 > 0 即全速（PWM 输入恒高）
+gpio_apply() {
+	local on=0
+
+	[ "$1" -gt 0 ] && on=1
+	[ "$GPIO_AL" = "1" ] && on=$(( 1 - on ))
+	echo "$on" > "$(gpio_path)/value" 2>/dev/null
+	return 0
+}
+
+pwm_apply() {
+	local pct=$1 ch=0 dir duty
+
+	[ -n "$PWM_CHIP" ] || return 1
+	dir="$PWM_CHIP/pwm$ch"
+	[ -d "$dir" ] || echo "$ch" > "$PWM_CHIP/export" 2>/dev/null
+	[ -d "$dir" ] || return 1
+
+	# 顺序必须是 period -> duty_cycle -> enable：
+	# duty_cycle 不允许大于当前 period
+	echo "$PERIOD_NS" > "$dir/period" 2>/dev/null
+	duty=$(( PERIOD_NS * pct / 100 ))
+	echo "$duty" > "$dir/duty_cycle" 2>/dev/null || return 1
+	echo 1 > "$dir/enable" 2>/dev/null
+	return 0
+}
+
+apply_percent() {
+	case "$BACKEND_OK" in
+		pwm)  pwm_apply "$1" ;;
+		gpio) gpio_apply "$1" ;;
+		*)    return 1 ;;
+	esac
+}
+
+read_percent() {
+	local dir per duty v
+
+	case "$BACKEND_OK" in
+		pwm)
+			dir="$PWM_CHIP/pwm0"
+			per=$(cat "$dir/period" 2>/dev/null)
+			duty=$(cat "$dir/duty_cycle" 2>/dev/null)
+			case "$per" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+			case "$duty" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+			[ "$per" -gt 0 ] || { echo 0; return 0; }
+			echo $(( duty * 100 / per ))
+			;;
+		gpio)
+			v=$(cat "$(gpio_path)/value" 2>/dev/null)
+			case "$v" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+			[ "$GPIO_AL" = "1" ] && v=$(( 1 - v ))
+			[ "$v" = "1" ] && echo 100 || echo 0
+			;;
+		*) echo 0 ;;
+	esac
+}
+
+# ------------------------------------------------------------- 温度与档位 --
+
+# 依次尝试配置的 temp_source，再自动扫描常见温度源；输出摄氏度整数
+read_temp() {
+	local f v
+
+	for f in $TEMP_SOURCES \
+	         /sys/class/thermal/thermal_zone*/temp \
+	         /sys/class/hwmon/hwmon*/temp*_input \
+	         /sys/class/net/wifi*/thermal/temp; do
+		[ -r "$f" ] || continue
+		v=$(cat "$f" 2>/dev/null) || continue
+		case "$v" in ''|*[!0-9-]*) continue ;; esac
+		[ "$v" -gt 1000 ] 2>/dev/null && v=$(( v / 1000 ))
+		echo "$v"
+		return 0
+	done
+	return 1
+}
+
+# 按阈值表取档；$2 为当前档位阈值（迟滞：温度需低于该阈值 HYST 度才降档）
+level_percent() {
+	local t=$1 keep=$2 lv tt pp best=0
+
+	for lv in $LEVELS; do
+		tt=${lv%%:*}
+		pp=${lv##*:}
+		if [ -n "$keep" ] && [ "$tt" = "$keep" ]; then
+			[ "$t" -ge $(( tt - HYST )) ] && best=$pp
+		else
+			[ "$t" -ge "$tt" ] && best=$pp
+		fi
+	done
+	echo "$best"
+}
+
+threshold_of() {
+	local lv tt pp
+
+	for lv in $LEVELS; do
+		tt=${lv%%:*}
+		pp=${lv##*:}
+		[ "$pp" = "$1" ] && { echo "$tt"; return 0; }
+	done
+	echo ""
+}
+
+# 结果写入全局 TARGET / TEMP
+compute_target() {
+	local t
+
+	TARGET=$FIXED_PCT
+	TEMP=""
+
+	[ "$MODE" = "off" ] && { TARGET=0; return 0; }
+	[ "$MODE" = "auto" ] || return 0
+
+	t=$(read_temp) || {
+		[ "$NO_TEMP_WARNED" = "1" ] || {
+			log "没有可用温度源，退化为固定 ${FIXED_PCT}%"
+			NO_TEMP_WARNED=1
+		}
+		return 0
+	}
+	TEMP=$t
+	TARGET=$(level_percent "$t" "$KEEP_THRESH")
+	return 0
+}
+
+# ------------------------------------------------------------------ 子命令 --
+
+run_daemon() {
+	load_config
+
+	if [ "$ENABLED" != "1" ]; then
+		log "已在 /etc/config/fanctl 中禁用，退出"
+		return 0
+	fi
+
+	if ! detect_backend; then
+		log "没有可用的风扇后端（pwmchip / gpio）"
+		return 1
+	fi
+	[ "$BACKEND_OK" = "gpio" ] && gpio_prepare
+
+	# 先落到固定档位：pwm enable 前占空比为 0，风扇不转
+	apply_percent "$FIXED_PCT" && {
+		CUR=$FIXED_PCT
+		KEEP_THRESH=$(threshold_of "$CUR")
+	}
+	log "已启动：后端=$BACKEND_OK 控制器=${PWM_CHIP:-无} 模式=$MODE 初始=${CUR:-未生效}%"
+
+	while :; do
+		compute_target "$CUR"
+		if [ "$TARGET" != "$CUR" ]; then
+			if apply_percent "$TARGET"; then
+				CUR=$TARGET
+				KEEP_THRESH=$(threshold_of "$CUR")
+				log "风扇 ${CUR}%（温度 ${TEMP:-无}）"
+			fi
+		fi
+		sleep "$POLL"
+	done
+}
+
+cmd_status() {
+	load_config
+	detect_backend
+
+	echo "enabled   : $ENABLED"
+	echo "mode      : $MODE (fixed_percent=$FIXED_PCT)"
+	echo "backend   : $BACKEND -> ${BACKEND_OK:-none}"
+	echo "pwm_chip  : ${PWM_CHIP:-none} (period=${PERIOD_NS}ns)"
+	echo "gpio      : $GPIO_NUM (active_low=$GPIO_AL)"
+	echo "poll      : ${POLL}s  hysteresis=${HYST}C"
+	echo "levels    : ${LEVELS:-none}"
+	echo "temp      : $(read_temp 2>/dev/null || echo none)"
+	echo "duty      : $(read_percent)%"
+}
+
+usage() {
+	cat <<EOF
+用法: fanctl <命令>
+  run              前台运行调速守护进程（/etc/init.d/fanctl 调用）
+  set <0-100>      立即设置风扇占空比百分比（mode=auto 时会被守护进程覆盖）
+  get              读取当前占空比百分比
+  status           显示配置 / 后端 / 温度 / 当前档位
+配置: /etc/config/fanctl
+EOF
+}
+
+case "$1" in
+	run)
+		run_daemon
+		;;
+	set)
+		case "$2" in ''|*[!0-9]*) echo "需要 0-100 的整数" >&2; exit 1 ;; esac
+		[ "$2" -le 100 ] || { echo "需要 0-100 的整数" >&2; exit 1; }
+		load_config
+		detect_backend || { echo "没有可用的风扇后端" >&2; exit 1; }
+		[ "$BACKEND_OK" = "gpio" ] && gpio_prepare
+		apply_percent "$2" || { echo "设置失败" >&2; exit 1; }
+		echo "风扇占空比: $(read_percent)%"
+		;;
+	get)
+		load_config
+		detect_backend || { echo 0; exit 1; }
+		read_percent
+		;;
+	status)
+		cmd_status
+		;;
+	*)
+		usage
+		exit 1
+		;;
+esac

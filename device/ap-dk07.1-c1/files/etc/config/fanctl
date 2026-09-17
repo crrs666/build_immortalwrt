@@ -1,0 +1,42 @@
+config fanctl 'settings'
+	option enabled '1'
+
+	# fixed : 恒定转速（本板主线内核没有温度传感器，默认模式）
+	# auto  : 按下面 level 阈值表随温度调速（无温度源时自动退化为 fixed）
+	# off   : 停转
+	option mode 'fixed'
+
+	# mode=fixed（以及 auto 找不到温度源时）使用的占空比百分比
+	# 原厂 box_led_sound 稳态即 40%（period 40000ns / duty 16000）
+	option fixed_percent '40'
+
+	# 温度轮询间隔（秒）
+	option poll_interval '10'
+
+	# auto | pwm | gpio
+	#   pwm  : pwm-gpio 软件 PWM（gpio32），0-100% 无级调速
+	#   gpio : 直接用 /sys/class/gpio 开关 gpio32，只有停转/全速两态
+	option backend 'auto'
+
+	# PWM 周期（ns）：40000 = 25kHz，与原厂 audio PWM 一致；
+	# 软件 PWM 由 hrtimer 触发，调大周期（降频）可减少 CPU 占用
+	option pwm_period_ns '40000'
+
+	# 留空 = 自动查找 pwm-gpio 注册的 pwmchip
+	option pwm_chip ''
+
+	# 风扇 PWM 引脚（原厂为 gpio32/audio_pwm2）
+	option gpio '32'
+	option gpio_active_low '0'
+
+	# 降档迟滞（摄氏度），避免在阈值附近反复变速
+	option hysteresis '3'
+
+	# 档位表，格式 "<温度> <百分比>"，按温度升序；
+	# 温度低于第一档时为 0%（停转）
+	list level '68 20'
+	list level '78 25'
+	list level '88 35'
+
+	# 温度源，留空则自动扫描 thermal_zone / hwmon / 原厂 wifi thermal
+	# 例：list temp_source '/sys/class/hwmon/hwmon0/temp1_input'

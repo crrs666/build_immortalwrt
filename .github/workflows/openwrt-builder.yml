@@ -147,7 +147,10 @@ jobs:
 
         echo -e "$(nproc) thread compile"
 
-        make -j$(nproc) || make -j1 V=s
+        # 内核 kconfig 在非 tty 环境下遇到"新符号(NEW)"会尝试交互读取 stdin，
+        # 读不到就 "* Restart config..." → syncconfig Error 1 → target/linux 编译失败。
+        # 用 yes '' 提供无限空行，让所有新符号直接取默认值，避免中断编译。
+        yes '' | make -j$(nproc) || yes '' | make -j1 V=s
 
         echo ""
         echo "===== CCACHE AFTER ====="
@@ -197,7 +200,7 @@ jobs:
         echo "release_tag=$(date +"%Y.%m.%d-%H.%M")" >> ${GITHUB_OUTPUT}
         touch release.txt
         echo "
-        💻 架构: x86-64
+        💻 架构: ipq40xx / Qualcomm AP-DK07.1-C1
 
         📂 源码: ${{ env.REPO_URL }}
 
