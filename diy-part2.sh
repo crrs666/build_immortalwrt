@@ -107,3 +107,31 @@ cp -f $GITHUB_WORKSPACE/banner package/base-files/files/etc/banner
 #cp -f $GITHUB_WORKSPACE/argon/icon/ms-icon-144x144.png feeds/luci/themes/luci-theme-argon/htdocs/luci-static/argon/icon/ms-icon-144x144.png
 #cp -f $GITHUB_WORKSPACE/argon/favicon.ico package/luci-theme-design/htdocs/luci-static/design/favicon.ico
 
+# ==========================================================================
+# AP-DK07.1-C1 (IPQ4019) device support injection
+# 注入自定义设备支持：DTS / 镜像定义 / WiFi caldata hotplug / 内核 cmdline
+# ==========================================================================
+DEVICE_DIR=$GITHUB_WORKSPACE/device/ap-dk07.1-c1
+DTSDIR=target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom
+
+# 1. 设备树 overlay（覆盖主线 DK07.1-C1：1GB 内存、厂商 NAND 分区表、
+#    禁用 PCIe(GPIO38 冲突)、rx8010 RTC、厂商按键等）
+mkdir -p $DTSDIR
+cp -f $DEVICE_DIR/qcom-ipq4019-ap-dk07.1-c1.dts $DTSDIR/
+
+# 2. 追加镜像定义 qcom_ap-dk07.1-c1（FitImage + UbiFit, 128k/2048）
+cat $DEVICE_DIR/generic-device.mk >> target/linux/ipq40xx/image/generic.mk
+
+# 3. 替换 ath10k caldata hotplug（本板从 "0:ART" 提取：
+#    2.4G a000000 @0x1000, 5G a800000 @0x5000）
+cp -f $DEVICE_DIR/11-ath10k-caldata target/linux/ipq40xx/base-files/etc/hotplug.d/firmware/11-ath10k-caldata
+
+# 4. 强制内核 cmdline：QCA U-Boot 传递厂商卷名 root=mtd:ubi_rootfs，
+#    必须覆盖为 ImmortalWrt 的 UBI 卷名 rootfs
+cat >> target/linux/ipq40xx/config-6.12 <<'EOF'
+
+# AP-DK07.1-C1: force cmdline (QCA U-Boot passes vendor volume name)
+CONFIG_CMDLINE="console=ttyMSM0,115200n8 ubi.mtd=rootfs root=ubi0:rootfs rootfstype=squashfs rootwait"
+CONFIG_CMDLINE_FORCE=y
+EOF
+

@@ -1,0 +1,273 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+//
+// Qualcomm AP-DK07.1-C1 (IPQ4019, 1GB RAM, 256MB NAND)
+// Overlay on top of the mainline DK07.1-C1 device tree, based on the
+// QCA SDK vendor device tree extracted from the running unit.
+
+#include "qcom-ipq4019-ap.dk07.1-c1.dts"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/soc/qcom,tcsr.h>
+
+/ {
+	model = "Qualcomm Technologies, Inc. AP-DK07.1-C1";
+	compatible = "qcom,ap-dk07.1-c1", "qcom,ipq4019-ap-dk07.1-c1", "qcom,ipq4019";
+
+	memory {
+		reg = <0x80000000 0x40000000>; /* 1GB, mainline assumes 512MB */
+	};
+
+	soc {
+		/*
+		 * PCIe is not populated on this unit and the mainline
+		 * perst-gpios (GPIO38) conflict with the vendor
+		 * func_reset_gpio (GPIO38).
+		 */
+		pci@40000000 {
+			status = "disabled";
+		};
+
+		tcsr@1949000 {
+			compatible = "qcom,tcsr";
+			reg = <0x1949000 0x100>;
+			qcom,wifi_glb_cfg = <TCSR_WIFI_GLB_CFG>;
+		};
+
+		tcsr@194b000 {
+			/* select hostmode */
+			compatible = "qcom,tcsr";
+			reg = <0x194b000 0x100>;
+			qcom,usb-hsphy-mode-select = <TCSR_USB_HSPHY_HOST_MODE>;
+			status = "okay";
+		};
+
+		ess_tcsr@1953000 {
+			compatible = "qcom,tcsr";
+			reg = <0x1953000 0x1000>;
+			qcom,ess-interface-select = <TCSR_ESS_PSGMII>;
+		};
+
+		tcsr@1957000 {
+			compatible = "qcom,tcsr";
+			reg = <0x1957000 0x100>;
+			qcom,wifi_noc_memtype_m0_m2 = <TCSR_WIFI_NOC_MEMTYPE_M0_M2>;
+		};
+
+		/* second UART enabled by mainline dk07.1-c1, unused by vendor */
+		serial@78b0000 {
+			status = "disabled";
+		};
+
+		i2c@78b8000 {
+			pinctrl-0 = <&i2c_1_pins>;
+			pinctrl-names = "default";
+			status = "okay";
+
+			rx8010@32 {
+				compatible = "epson,rx8010";
+				reg = <0x32>;
+			};
+		};
+
+		keys {
+			compatible = "gpio-keys";
+
+			qconfig {
+				label = "qconfig";
+				gpios = <&tlmm 18 GPIO_ACTIVE_LOW>;
+				linux,code = <0x211>; /* vendor keycode */
+			};
+
+			wps-reset {
+				label = "wps-reset";
+				gpios = <&tlmm 46 GPIO_ACTIVE_LOW>;
+				linux,code = <0x198>; /* vendor keycode (KEY_WPS_BUTTON) */
+			};
+
+			func {
+				label = "func";
+				gpios = <&tlmm 54 GPIO_ACTIVE_LOW>;
+				linux,code = <0x224>; /* vendor keycode */
+			};
+		};
+	};
+};
+
+&tlmm {
+	i2c_1_pins: i2c-1-pinmux {
+		pins = "gpio34", "gpio35";
+		function = "blsp_i2c1";
+		bias-disable;
+	};
+
+	mdio_pins: mdio-pinmux {
+		mdio {
+			pins = "gpio6";
+			function = "mdio";
+			bias-pull-up;
+		};
+
+		mdc {
+			pins = "gpio7";
+			function = "mdc";
+			bias-pull-up;
+		};
+	};
+};
+
+/* NAND partition layout must match the QCA vendor layout / U-Boot */
+&nand {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		partition@0 {
+			label = "0:SBL1";
+			reg = <0x0 0x40000>;
+			read-only;
+		};
+
+		partition@40000 {
+			label = "0:MIBIB";
+			reg = <0x40000 0x40000>;
+			read-only;
+		};
+
+		partition@80000 {
+			label = "0:BOOTCONFIG";
+			reg = <0x80000 0x40000>;
+			read-only;
+		};
+
+		partition@c0000 {
+			label = "0:BOOTCONFIG1";
+			reg = <0xc0000 0x40000>;
+			read-only;
+		};
+
+		partition@100000 {
+			label = "0:QSEE_1";
+			reg = <0x100000 0x80000>;
+			read-only;
+		};
+
+		partition@180000 {
+			label = "0:QSEE";
+			reg = <0x180000 0x80000>;
+			read-only;
+		};
+
+		partition@200000 {
+			label = "0:CDT_1";
+			reg = <0x200000 0x40000>;
+			read-only;
+		};
+
+		partition@240000 {
+			label = "0:CDT";
+			reg = <0x240000 0x40000>;
+			read-only;
+		};
+
+		partition@280000 {
+			label = "0:APPSBLENV";
+			reg = <0x280000 0x40000>;
+			read-only;
+		};
+
+		partition@2c0000 {
+			label = "0:ART";
+			reg = <0x2c0000 0x40000>;
+			read-only;
+		};
+
+		partition@300000 {
+			label = "0:APPSBL_1";
+			reg = <0x300000 0x100000>;
+			read-only;
+		};
+
+		partition@400000 {
+			label = "0:APPSBL";
+			reg = <0x400000 0x100000>;
+			read-only;
+		};
+
+		/* inactive rootfs slot, kept for recovery */
+		partition@500000 {
+			label = "rootfs_1";
+			reg = <0x500000 0x5b00000>;
+		};
+
+		/* active rootfs slot: UBI with kernel + rootfs volumes */
+		partition@6000000 {
+			label = "rootfs";
+			reg = <0x6000000 0x5b00000>;
+		};
+
+		partition@bb00000 {
+			label = "data";
+			reg = <0xbb00000 0x4400000>;
+		};
+
+		partition@ff00000 {
+			label = "config_user";
+			reg = <0xff00000 0x100000>;
+		};
+	};
+};
+
+&blsp_dma {
+	status = "okay";
+};
+
+&watchdog {
+	status = "okay";
+};
+
+&prng {
+	status = "okay";
+};
+
+&crypto {
+	status = "okay";
+};
+
+&cryptobam {
+	status = "okay";
+};
+
+&mdio {
+	pinctrl-0 = <&mdio_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&usb2 {
+	status = "okay";
+};
+
+&usb2_hs_phy {
+	status = "okay";
+};
+
+&usb3 {
+	status = "okay";
+};
+
+&usb3_hs_phy {
+	status = "okay";
+};
+
+&usb3_ss_phy {
+	status = "okay";
+};
+
+&wifi0 {
+	status = "okay";
+};
+
+&wifi1 {
+	status = "okay";
+};
