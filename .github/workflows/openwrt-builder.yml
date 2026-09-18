@@ -1,11 +1,6 @@
 name: openwrt-builder
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'device/**'
-      - 'diy-part2.sh'
   repository_dispatch:
   workflow_dispatch:
     inputs:
