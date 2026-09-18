@@ -12,8 +12,10 @@
 # 亮，所以必须在用户态挂上 trigger。
 #
 # 内核 6.12 的 netdev trigger 没有合并的 mode 属性，而是一堆独立的开关
-# （link / link_10 / link_100 / link_1000 / tx / rx ...），逐个写 1 即可；
-# 写不存在的属性会报错，所以先判断再写。
+# （link / tx / rx / link_10 / link_100 / link_1000 ...），逐个写 1 即可。
+# 但 qca807x 在 offload（LED_HW_CTRL）下只支持 link/tx/rx 的组合，写
+# link_10 / link_100 / link_1000 会被驱动以 EINVAL 拒绝（实测），所以只挂
+# link+tx+rx，即"有链路 + 有收发活动"，这也正是普通 RJ45 指示灯的行为。
 #
 # 前缀随设备树节点名变化，这里用 *:lan1 通配匹配，不写死前缀。
 
@@ -27,7 +29,7 @@ set_led() {
 	echo netdev > "$led/trigger"
 	echo "$port" > "$led/device_name"
 
-	for mode in link link_10 link_100 link_1000 tx rx; do
+	for mode in link tx rx; do
 		[ -e "$led/$mode" ] && echo 1 > "$led/$mode"
 	done
 }
