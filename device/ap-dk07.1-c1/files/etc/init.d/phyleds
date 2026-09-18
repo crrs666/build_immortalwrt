@@ -12,10 +12,15 @@
 # 亮，所以必须在用户态挂上 trigger。
 #
 # 内核 6.12 的 netdev trigger 没有合并的 mode 属性，而是一堆独立的开关
-# （link / tx / rx / link_10 / link_100 / link_1000 ...），逐个写 1 即可。
-# 但 qca807x 在 offload（LED_HW_CTRL）下只支持 link/tx/rx 的组合，写
-# link_10 / link_100 / link_1000 会被驱动以 EINVAL 拒绝（实测），所以只挂
-# link+tx+rx，即"有链路 + 有收发活动"，这也正是普通 RJ45 指示灯的行为。
+# （link / link_10 / link_100 / link_1000 / tx / rx ...），逐个写 1 即可。
+# 两个坑（均在真机实测确认）：
+#  1) link 与 link_10/100/1000 互斥：先写 link 再写速度位会被 -EINVAL 拒掉
+#     （见 ledtrig-netdev.c netdev_led_attr_store() 的互斥检查）；
+#  2) qca807x 的 qca807x_led_parse_netdev() 根本不解析 TRIGGER_NETDEV_LINK，
+#     它只认 TX / RX / LINK_10 / LINK_100 / LINK_1000 / HALF_DUPLEX /
+#     FULL_DUPLEX，所以写 link 是"写进去了但硬件无反应"。
+# 正确挂法：按速率点亮 link_10/link_100/link_1000 + 收发闪烁 tx/rx，
+# 千万不要碰 link，否则速度位全被拒，灯只剩"有流量才闪"。
 #
 # 前缀随设备树节点名变化，这里用 *:lan1 通配匹配，不写死前缀。
 
@@ -29,7 +34,7 @@ set_led() {
 	echo netdev > "$led/trigger"
 	echo "$port" > "$led/device_name"
 
-	for mode in link tx rx; do
+	for mode in link_10 link_100 link_1000 tx rx; do
 		[ -e "$led/$mode" ] && echo 1 > "$led/$mode"
 	done
 }
