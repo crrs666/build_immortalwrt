@@ -166,14 +166,16 @@ CONFIG_PWM_GPIO=y
 EOF
 
 cp -a $DEVICE_DIR/files/. target/linux/ipq40xx/base-files/
-chmod 0755 target/linux/ipq40xx/base-files/etc/init.d/fanctl \
-           target/linux/ipq40xx/base-files/usr/sbin/fanctl
-sed -i 's/\r$//' target/linux/ipq40xx/base-files/etc/init.d/fanctl \
-                 target/linux/ipq40xx/base-files/usr/sbin/fanctl
+DEVICE_FILES_INITD="target/linux/ipq40xx/base-files/etc/init.d/fanctl \
+                    target/linux/ipq40xx/base-files/etc/init.d/phyleds \
+                    target/linux/ipq40xx/base-files/usr/sbin/fanctl"
+chmod 0755 $DEVICE_FILES_INITD
+sed -i 's/\r$//' $DEVICE_FILES_INITD
 
 # base-files 里的文件没有 postinst，开机自启需显式建 rc.d 软链接
 mkdir -p target/linux/ipq40xx/base-files/etc/rc.d
 ln -sf ../init.d/fanctl target/linux/ipq40xx/base-files/etc/rc.d/S95fanctl
+ln -sf ../init.d/phyleds target/linux/ipq40xx/base-files/etc/rc.d/S97phyleds
 
 # 7. HWMON：原厂温度来自 QSDK 私有 wifi 驱动的 /sys/class/net/wifiN/thermal/temp
 #    （射频温度），主线 ath10k 没有该节点，但 wmi_10_4_ops 实现了
@@ -203,6 +205,36 @@ awk '/^[[:space:]]*8dev,habanero-dvk/ && !done {
 # 插入失败要立刻中止，否则要等整轮编译完才会发现板子还是没网络配置
 grep -q 'qcom,ap-dk07.1-c1' "$NETWORK_SH" || {
 	echo "ERROR: failed to add qcom,ap-dk07.1-c1 to $NETWORK_SH" >&2
+	exit 1
+}
+
+# 9. 出厂 MAC（内核侧）：DTS 里 config_user@0x2000 用 nvmem-layout(fixed-layout)
+#    把原厂 MAC 暴露给 gmac，内核必须启用这个 layout 驱动才会建出 nvmem 设备，
+#    否则 gmac/ipqess 拿不到 mac-address，只能自己造一个随机地址。
+cat >> target/linux/ipq40xx/config-6.12 <<'EOF'
+
+# AP-DK07.1-C1: nvmem-layout "fixed-layout" for the factory MAC cell
+CONFIG_NVMEM_LAYOUT_FIXED=y
+EOF
+
+# 10. 出厂 MAC（用户态）：上面的 nvmem 只解决内核网卡（gmac，即 DSA master）
+#     的地址，lan/wan 这些交换机口的 MAC 由 02_network 生成。原厂规律是
+#     wan = lan + 1（config_user 0x2000 处 D0:B6:0A:00:07:8C，wan=...:8D）。
+#     插到 ipq40xx_setup_macs() 里 case 的第一个分支前（该函数末尾会把
+#     lan_mac/wan_mac 写进 uci）。
+awk '
+/^ipq40xx_setup_macs\(\)/ { inmacs = 1 }
+inmacs && !done && index($0, "case \"$board\" in") > 0 {
+	print "\tqcom,ap-dk07.1-c1)"
+	print "\t\tlan_mac=$(mtd_get_mac_binary config_user 0x2000)"
+	print "\t\t[ -n \"$lan_mac\" ] && wan_mac=$(macaddr_add \"$lan_mac\" 1)"
+	print "\t\t;;"
+	done = 1
+}
+{ print }' "$NETWORK_SH" > "$NETWORK_SH.tmp" && mv "$NETWORK_SH.tmp" "$NETWORK_SH"
+
+grep -q 'mtd_get_mac_binary config_user 0x2000' "$NETWORK_SH" || {
+	echo "ERROR: failed to add MAC setup for qcom,ap-dk07.1-c1 to $NETWORK_SH" >&2
 	exit 1
 }
 

@@ -1,0 +1,36 @@
+#!/bin/sh /etc/rc.common
+#
+# AP-DK07.1-C1: 点亮 RJ45 网口指示灯（5 个 QCA8075 PHY 的 LED）
+#
+# 这 5 个 LED 属于 PHY，由 qca807x 驱动注册成 LED class 设备，名字形如
+#   <mdio 控制器名>:<phy 地址>:<dts label>
+# 即 90000.mdio-1:00:lan1 … :03:lan4 / :04:wan（内核对 PHY LED 强制带
+# devicename 前缀，所以不是裸的 lan1）。
+#
+# 内核不会自动给它们挂 trigger，而 qca807x 只在 LED 被 netdev trigger 接管
+# （走 LED_HW_CTRL offload，驱动才去写 MMD7 的 LED 控制寄存器）之后灯才会
+# 亮，所以必须在用户态挂上 trigger。
+#
+# 前缀随设备树节点名变化，这里用 *:lan1 通配匹配，不写死前缀。
+
+START=97
+
+set_led() {
+	local port="$1" led="$2"
+
+	[ -e "$led/trigger" ] || return 0
+
+	echo netdev > "$led/trigger"
+	echo "$port" > "$led/device_name"
+	echo "link_10 link_100 link_1000 tx rx" > "$led/mode"
+}
+
+start() {
+	local led
+
+	for led in /sys/class/leds/*:lan1; do set_led lan1 "$led"; done
+	for led in /sys/class/leds/*:lan2; do set_led lan2 "$led"; done
+	for led in /sys/class/leds/*:lan3; do set_led lan3 "$led"; done
+	for led in /sys/class/leds/*:lan4; do set_led lan4 "$led"; done
+	for led in /sys/class/leds/*:wan; do set_led wan "$led"; done
+}
