@@ -72,6 +72,38 @@ CONFIG_PACKAGE_luci-theme-openwrt-2020=y
 # 应用过滤
 # CONFIG_PACKAGE_luci-app-oaf=y
 
+# ==========================================================================
+# PassWall（只带 sing-box 后端）
+# 1) 内核模块不需要手写：kmod-nft-socket/tproxy/nat、kmod-nf-reject[6]
+#    来自 luci-app-passwall 的 DEPENDS，kmod-inet-diag/netlink-diag/tun
+#    来自 sing-box 的 DEPENDS，构建时会自动编译并打进固件。
+# 2) 其余 INCLUDE_* 必须显式关掉：ipq40xx 属于 arm，那些选项的
+#    "default y if aarch64||arm||i386||x86_64" 会全部命中，
+#    把 xray-core/haproxy/shadowsocks-rust/v2ray-plugin 等一起编进去。
+# 3) dnsmasq 必须换成 dnsmasq-full：基础版编译时带 -DNO_IPSET 且不带
+#    HAVE_NFTSET，passwall 的 check_run_environment() 会因
+#    dnsmasq_nftset=0 判定"不满足任何透明代理系统环境"而拒绝启用。
+# ==========================================================================
+CONFIG_PACKAGE_luci-app-passwall=y
+CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Haproxy is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_NaiveProxy is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Server is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadow_TLS is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Simple_Obfs is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Geodata is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Geoview is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Plugin is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray_Plugin is not set
+
+# 透明代理必需的 dnsmasq-full（nftset 默认开）；基础版 dnsmasq 与之互斥
+# CONFIG_PACKAGE_dnsmasq is not set
+CONFIG_PACKAGE_dnsmasq-full=y
+CONFIG_PACKAGE_dnsmasq_full_nftset=y
+
 " >> .config
 
 # 修改默认IP
@@ -220,21 +252,31 @@ EOF
 # 10. 出厂 MAC（用户态）：上面的 nvmem 只解决内核网卡（gmac，即 DSA master）
 #     的地址，lan/wan 这些交换机口的 MAC 由 02_network 生成。原厂规律是
 #     wan = lan + 1（config_user 0x2000 处 D0:B6:0A:00:07:8C，wan=...:8D）。
-#     插到 ipq40xx_setup_macs() 里 case 的第一个分支前（该函数末尾会把
-#     lan_mac/wan_mac 写进 uci）。
+#     注意插入点：必须插在 ipq40xx_setup_macs() 里 "case "$board" in" 那一行
+#     *之后*，否则分支落在 case 外面，脚本直接语法错误（line 181: unexpected ")"），
+#     整个 02_network 不执行 —— 板子看起来有网络，其实吃的是镜像自带的默认
+#     /etc/config/network，MAC 也就永远不会被写进 uci。
 awk '
 /^ipq40xx_setup_macs\(\)/ { inmacs = 1 }
 inmacs && !done && index($0, "case \"$board\" in") > 0 {
+	print
 	print "\tqcom,ap-dk07.1-c1)"
 	print "\t\tlan_mac=$(mtd_get_mac_binary config_user 0x2000)"
 	print "\t\t[ -n \"$lan_mac\" ] && wan_mac=$(macaddr_add \"$lan_mac\" 1)"
 	print "\t\t;;"
 	done = 1
+	next
 }
 { print }' "$NETWORK_SH" > "$NETWORK_SH.tmp" && mv "$NETWORK_SH.tmp" "$NETWORK_SH"
 
 grep -q 'mtd_get_mac_binary config_user 0x2000' "$NETWORK_SH" || {
 	echo "ERROR: failed to add MAC setup for qcom,ap-dk07.1-c1 to $NETWORK_SH" >&2
+	exit 1
+}
+
+# 语法检查：上面这类"插入位置错了"的问题只会让脚本静默失效，编译期查不出来
+sh -n "$NETWORK_SH" || {
+	echo "ERROR: $NETWORK_SH has a syntax error after patching" >&2
 	exit 1
 }
 
