@@ -31,6 +31,7 @@ case "$FIRMWARE" in
 	case "$board" in
 	qcom,ap-dk07.1-c1)
 		caldata_extract "0:ART" 0x1000 0x2f20
+		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_binary config_user 0x2000) 2)
 		;;
 	asus,rt-ac42u)
 		caldata_extract_ubi "Factory" 0x1000 0x2f20
@@ -119,6 +120,7 @@ case "$FIRMWARE" in
 	case "$board" in
 	qcom,ap-dk07.1-c1)
 		caldata_extract "0:ART" 0x5000 0x2f20
+		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_binary config_user 0x2000) 3)
 		;;
 	avm,fritzbox-4040)
 		/usr/bin/fritz_cal_extract -i 1 -s 0x400 -e 0x208 -l 12064 -o /lib/firmware/$FIRMWARE $(find_mtd_chardev "urlader_config")
