@@ -48,7 +48,11 @@ function git_sparse_clone() {
 #bash add_turboacc.sh --no-sfe
 
 
-echo "
+# 用 heredoc（<<'CONFIG_EOF'），不能用 echo "…"：下面注释里出现的 ASCII 双引号会提前
+# 闭合字符串，紧随其后的 || 会被 shell 当成逻辑或操作符解析，
+# 结果整段配置静默写不进 .config（症状：主题/passwall 的 CONFIG_PACKAGE_* 全没生效）。
+cat <<'CONFIG_EOF' >> .config
+
 # 主题
 #CONFIG_PACKAGE_luci-theme-design=y
 
@@ -103,8 +107,30 @@ CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
 # CONFIG_PACKAGE_dnsmasq is not set
 CONFIG_PACKAGE_dnsmasq-full=y
 CONFIG_PACKAGE_dnsmasq_full_nftset=y
+CONFIG_EOF
 
-" >> .config
+# 这段配置一旦被写坏，kconfig 只会把符号静默丢掉：编译照样成功，固件里却没有
+# 主题和 passwall。这里显式断言，让"配置没写进去"变成编译期错误。
+for sym in CONFIG_PACKAGE_luci-theme-argon=y CONFIG_PACKAGE_luci-app-passwall=y \
+           CONFIG_PACKAGE_dnsmasq-full=y; do
+	grep -qx "$sym" .config || {
+		echo "ERROR: $sym 没有写进 .config，检查 diy-part2.sh 的 .config 写入块" >&2
+		exit 1
+	}
+done
+
+# luci-theme-argon 声明依赖 +wget-any，但这个虚拟包在 v25.12.1 所 pin 的 packages
+# feed 里并不存在（net/wget 只提供 wget-ssl / wget-nossl），kconfig 会因为依赖
+# 无法满足把 CONFIG_PACKAGE_luci-theme-argon 静默丢掉：编译照样成功，但主题没装，
+# 页面回退去编译该主题的 Lua 模板，报
+#   Unable to compile 'themes/argon/header' as Lua template: Unable to load Lua runtime
+# 换成真实存在的 wget-ssl（它 PROVIDES:=wget，argon 的壁纸下载功能照常可用）。
+ARGON_MAKEFILE=feeds/luci/themes/luci-theme-argon/Makefile
+sed -i 's/+wget-any/+wget-ssl/' "$ARGON_MAKEFILE"
+grep -q '+wget-ssl' "$ARGON_MAKEFILE" || {
+	echo "ERROR: $ARGON_MAKEFILE 里没有把 +wget-any 换成 +wget-ssl" >&2
+	exit 1
+}
 
 # 修改默认IP
 sed -i 's/192.168.1.1/10.0.0.1/g' package/base-files/files/bin/config_generate
