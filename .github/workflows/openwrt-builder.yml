@@ -181,7 +181,12 @@ jobs:
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
-        cd openwrt/bin/targets/*/*
+        cd openwrt
+        # 主题/passwall 的符号如果被 kconfig 因依赖不满足静默丢掉，编译依然会成功，
+        # 只是固件里没有这些包。把 defconfig 之后的最终取值随固件一起发出来，
+        # 便于不依赖 Actions 日志就能核对。
+        grep -E 'CONFIG_PACKAGE_(luci-theme|luci-app-passwall|luci-lua-runtime|luci-compat|wget-)' .config > bin/targets/ipq40xx/generic/config-check.txt 2>&1 || true
+        cd bin/targets/*/*
         rm -rf packages
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> ${GITHUB_OUTPUT}
